@@ -32,16 +32,9 @@ class Application extends BaseApplication
      */
     public function __construct($name = 'UNKNOWN', $version = 'UNKNOWN')
     {
-        $this->initTimezone();
-
         parent::__construct('Ellire', $this->getVersion());
 
         $this->setDefaultCommand('reprocess-templates');
-    }
-
-    private function initTimezone()
-    {
-        date_default_timezone_set(@date_default_timezone_get());
     }
 
     /**
@@ -56,6 +49,7 @@ class Application extends BaseApplication
             new Command\ListMacrosCommand(),
             new Command\ReprocessTemplatesCommand(),
             new Command\TemplateMacrosCommand(),
+            new Command\InstallDefaultSystemConfigCommand(),
         ));
 
         return $commands;
@@ -83,6 +77,36 @@ class Application extends BaseApplication
         return $composerJson->version;
     }
 
+    public function getLocalPath($relative = null)
+    {
+        $path = __DIR__ . '/../../';
+        if (isset($relative)) {
+            $path .= DIRECTORY_SEPARATOR . $relative;
+        }
+
+        return realpath($path);
+    }
+
+    public function isGloballyInstalled()
+    {
+        if (file_exists($this->getLocalPath('../../autoload.php')) &&
+            !file_exists($this->getLocalPath('vendor/autoload.php'))) {
+            return true;
+        }
+
+        return false;
+    }
+
+    public function getSystemConfigFilePath()
+    {
+        return '/etc/ellire.json';
+    }
+
+    public function getUserConfigFilePath()
+    {
+        return getenv('HOME') . '/.ellire/ellire.json';
+    }
+
     /**
      * @return MacroResolver
      */
@@ -102,7 +126,11 @@ class Application extends BaseApplication
 
         $loader = new DelegatingLoader($loaderResolver);
 
-        $this->macroResolver = new MacroResolver($loader);
+        $this->macroResolver = new MacroResolver(
+            $loader,
+            $this->getSystemConfigFilePath(),
+            $this->getUserConfigFilePath()
+        );
         return $this->macroResolver;
     }
 

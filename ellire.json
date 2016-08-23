@@ -1,5 +1,5 @@
 {
-    "global": {
+    "globals": {
         "profile": "dev",
         "config_extension": "json",
         "dist_file_extension": "template",

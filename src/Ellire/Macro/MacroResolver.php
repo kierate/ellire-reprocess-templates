@@ -16,22 +16,35 @@ class MacroResolver
     private $macrosResolutionPath = array();
     private $configFilesUsed = array();
     private $envVariablesUsed = array();
+    private $systemConfigFilePath;
+    private $userConfigFilePath;
 
-    public function __construct(LoaderInterface $loader)
+    private $macrosFromSystemConfigFile = array();
+    private $macrosFromUserConfigFile = array();
+    private $macrosFromLocalConfigFile = array();
+    private $macrosFromInstanceConfigFile = array();
+
+
+    public function __construct(LoaderInterface $loader, $systemConfigFilePath, $userConfigFilePath)
     {
         $this->loader = $loader;
+        $this->systemConfigFilePath = $systemConfigFilePath;
+        $this->userConfigFilePath = $userConfigFilePath;
     }
 
     private function getCoreMacroValues()
     {
         return array(
+            //these 3 have an impact on how Ellire resolves the macros from files,
+            //they can only be set and will only be read from the system and/or user config
             'profile' => 'dev',
-            'config_extension' => 'json', //system config is installed as json, so will not be affected by this
+            'config_extension' => 'json', //system and user config will not be affected by this
             'deploy_path' => getcwd(),
-            'dist_file_extension' => 'template',
-            'generated_files_writable' => 'false',
+            //these 4 control macro processing and reading/writing from/to template files
             'macro_opening_string' => '@',
             'macro_closing_string' => '@',
+            'dist_file_extension' => 'template',
+            'generated_files_writable' => 'false',
         );
     }
 
@@ -53,22 +66,82 @@ class MacroResolver
         return $this->rawMacros;
     }
 
+    private function resolveCoreConfigMacroValue($macroName)
+    {
+        if (isset($this->macroOverrides) && array_key_exists($macroName, $this->macroOverrides)) {
+            return $this->macroOverrides[$macroName];
+        }
+
+        if (false !== $profile = $this->getValueFromEnvVariable($macroName)) {
+            return $profile;
+        }
+
+        if (!empty($this->macrosFromUserConfigFile) &&
+            isset($this->macrosFromUserConfigFile['globals'][$macroName])) {
+            return $this->macrosFromUserConfigFile['globals'][$macroName];
+        }
+
+        if (!empty($this->macrosFromSystemConfigFile) &&
+            isset($this->macrosFromSystemConfigFile['globals'][$macroName])) {
+            return $this->macrosFromSystemConfigFile['globals'][$macroName];
+        }
+
+        $coreMacros = $this->getCoreMacroValues();
+
+        return $coreMacros[$macroName];
+    }
+    
+    public function resolveProfile()
+    {
+        return $this->resolveCoreConfigMacroValue('profile');
+    }
+
     public function resolveRawMacroValuesFromConfigAndEnvironment()
     {
-        $profile = null;
-        $macros = $this->getCoreMacroValues();
+        $this->loadSystemConfigFile();
+        $this->loadUserConfigFile();
 
-        $macros = $this->loadMacrosFromSystemConfigFile($macros, $profile);
-        $macros = $this->loadMacrosFromUserConfigFile($macros, $profile);
-        $macros = $this->loadMacrosFromLocalConfigFile($macros, $profile);
-        $macros = $this->loadMacrosFromInstanceConfigFile($macros);
+        $profile = $this->resolveCoreConfigMacroValue('profile');
+        $deploymentPath = $this->getRealPath($this->resolveCoreConfigMacroValue('deploy_path'));
+        $configExtension = $this->resolveCoreConfigMacroValue('config_extension');
 
-        $macros = $this->loadMacrosFromEnvironment($macros);
-        $macros = $this->loadMacrosFromOverrides($macros);
+        $this->loadLocalConfigFile($deploymentPath, $configExtension);
+        $this->loadInstanceConfigFile($deploymentPath, $configExtension);
+
+        $macros = $this->getMergedProfileMacrosFromConfigFiles($profile);
+        $macros = $this->updateFromEnvironment($macros);
+        $macros = $this->updateFromOverrides($macros);
+
+        $macros['profile'] = $profile;
+        $macros['deploy_path'] = $deploymentPath;
+        $macros['config_extension'] = $configExtension;
 
         $this->rawMacros = $macros;
 
         return $this;
+    }
+
+    private function getMergedProfileMacrosFromConfigFiles($profile)
+    {
+        //bare minimum
+        $macros = $this->getCoreMacroValues();
+
+        //system-wide config
+        $macros = $this->mergeProfileMacrosFromConfigFile($macros, $this->macrosFromSystemConfigFile, 'globals');
+        $macros = $this->mergeProfileMacrosFromConfigFile($macros, $this->macrosFromSystemConfigFile, $profile);
+
+        //user-level config
+        $macros = $this->mergeProfileMacrosFromConfigFile($macros, $this->macrosFromUserConfigFile, 'globals');
+        $macros = $this->mergeProfileMacrosFromConfigFile($macros, $this->macrosFromUserConfigFile, $profile);
+
+        //local config for the application being processed
+        $macros = $this->mergeProfileMacrosFromConfigFile($macros, $this->macrosFromLocalConfigFile, 'globals');
+        $macros = $this->mergeProfileMacrosFromConfigFile($macros, $this->macrosFromLocalConfigFile, $profile);
+
+        //instance config for the application being processed
+        $macros = $this->mergeAllMacrosFromConfigFile($macros, $this->macrosFromInstanceConfigFile);
+
+        return $macros;
     }
 
     public function getProcessedMacroValues()
@@ -125,82 +198,74 @@ class MacroResolver
 
     private function getSystemConfigFilePath()
     {
-        return $this->getSystemConfigDirectory() . 'ellire.json';
+        return $this->systemConfigFilePath;
     }
 
-    private function loadMacrosFromSystemConfigFile($macros, &$profile)
-    {
-        $macrosFromConfigFile = $this->load($this->getSystemConfigFilePath());
-
-        if (!array_key_exists('global', $macrosFromConfigFile) || !is_array(($macrosFromConfigFile['global']))) {
-            throw new RuntimeException("Missing global section is system config file");
-        }
-
-        $macros = $this->mergeProfileMacrosFromConfigFile($macros, $macrosFromConfigFile, 'global');
-
-        if (!$profile = $this->getProfileFromOverridesOrEnv()) {
-            $profile = $macros['profile'];
-        }
-
-        $macros = $this->mergeProfileMacrosFromConfigFile($macros, $macrosFromConfigFile, $profile);
-
-        return $macros;
-    }
-
-    private function getHomeConfigFilePath($configExtension)
-    {
-        return $this->getUserConfigDirectory() . 'ellire.' . $configExtension;
-    }
-
-    private function loadMacrosFromUserConfigFile($macros, $profile)
+    private function loadSystemConfigFile()
     {
         try {
-            $macrosFromConfigFile = $this->load($this->getHomeConfigFilePath($macros['config_extension']));
+            $macrosFromConfigFile = $this->load($this->getSystemConfigFilePath());
         } catch (ConfigFileNotReadableException $e) {
-            return $macros;
+            //allow installations without a system-wide config
+            return;
         }
 
-        $macros = $this->mergeProfileMacrosFromConfigFile($macros, $macrosFromConfigFile, 'global');
-        $macros = $this->mergeProfileMacrosFromConfigFile($macros, $macrosFromConfigFile, $profile);
+        if (!array_key_exists('globals', $macrosFromConfigFile) || !is_array(($macrosFromConfigFile['globals']))) {
+            throw new RuntimeException("Missing globals section is system config file");
+        }
 
-        return $macros;
+        $this->macrosFromSystemConfigFile = $macrosFromConfigFile;
     }
 
-    private function getLocalConfigFilePath($configExtension)
+    private function getHomeConfigFilePath()
     {
-        return $this->getCurrentDirectory() . 'ellire.' . $configExtension;
+        return $this->userConfigFilePath;
     }
 
-    private function loadMacrosFromLocalConfigFile($macros, $profile)
+    private function loadUserConfigFile()
     {
         try {
-            $macrosFromConfigFile = $this->load($this->getLocalConfigFilePath($macros['config_extension']));
+            $macrosFromConfigFile = $this->load($this->getHomeConfigFilePath());
         } catch (ConfigFileNotReadableException $e) {
-            return $macros;
+            //allow installations without a system-wide config
+            return;
         }
 
-        $macros = $this->mergeProfileMacrosFromConfigFile($macros, $macrosFromConfigFile, 'global');
-        $macros = $this->mergeProfileMacrosFromConfigFile($macros, $macrosFromConfigFile, $profile);
-
-        return $macros;
+        $this->macrosFromUserConfigFile = $macrosFromConfigFile;
     }
 
-    private function getInstanceConfigFilePath($configExtension)
+    private function getLocalConfigFilePath($deploymentPath, $configExtension)
     {
-        return $this->getCurrentDirectory() . '.ellire-instance.' . $configExtension;
+        return $deploymentPath . DIRECTORY_SEPARATOR . 'ellire.' . $configExtension;
     }
 
-    private function loadMacrosFromInstanceConfigFile($macros)
+    private function loadLocalConfigFile($deploymentPath, $configExtension)
     {
         try {
-            $macrosFromConfigFile = $this->load($this->getInstanceConfigFilePath($macros['config_extension']));
+            $macrosFromConfigFile = $this->load($this->getLocalConfigFilePath($deploymentPath, $configExtension));
         } catch (ConfigFileNotReadableException $e) {
-            return $macros;
+            //possible not to have the deployment (local) config
+            return;
         }
 
-        $macros = $this->mergeAllMacrosFromConfigFile($macros, $macrosFromConfigFile);
+        $this->macrosFromLocalConfigFile = $macrosFromConfigFile;
+    }
 
-        return $macros;
+    private function getInstanceConfigFilePath($deploymentPath, $configExtension)
+    {
+        return $deploymentPath . DIRECTORY_SEPARATOR . '.ellire-instance.' . $configExtension;
+    }
+
+    private function loadInstanceConfigFile($deploymentPath, $configExtension)
+    {
+        try {
+            $macrosFromConfigFile = $this->load($this->getInstanceConfigFilePath($deploymentPath, $configExtension));
+        } catch (ConfigFileNotReadableException $e) {
+            //possible not to have any instance config
+            return;
+        }
+
+        $this->macrosFromInstanceConfigFile = $macrosFromConfigFile;
     }
 
     private function load($file)
@@ -227,7 +292,7 @@ class MacroResolver
             return $profile;
         }
 
-        $this->loadMacrosFromSystemConfigFile($this->getCoreMacroValues(), $profile);
+        $this->loadSystemConfigFile($this->getCoreMacroValues(), $profile);
 
         return $profile;
     }
@@ -245,7 +310,7 @@ class MacroResolver
         return false;
     }
 
-    private function loadMacrosFromEnvironment(array $macros)
+    private function updateFromEnvironment(array $macros)
     {
         foreach (array_keys($macros) as $macroName) {
             if (false !== $value = $this->getValueFromEnvVariable($macroName)) {
@@ -256,7 +321,7 @@ class MacroResolver
         return $macros;
     }
 
-    private function loadMacrosFromOverrides(array $macros)
+    private function updateFromOverrides(array $macros)
     {
         if (empty($this->macroOverrides)) {
             return $macros;
@@ -269,21 +334,6 @@ class MacroResolver
         }
 
         return $macros;
-    }
-
-    private function getSystemConfigDirectory()
-    {
-        return '/etc/';
-    }
-
-    private function getUserConfigDirectory()
-    {
-        return getenv('HOME') . '/.ellire/';
-    }
-
-    private function getCurrentDirectory()
-    {
-        return getcwd() . '/';
     }
 
     private function getValueFromEnvVariable($macroName)
@@ -347,5 +397,11 @@ class MacroResolver
                 $this->macrosResolutionPath[$root] = array_merge($children, array($childMacro));
             }
         }
+    }
+
+    private function getRealPath($path)
+    {
+        $path = rtrim($path, DIRECTORY_SEPARATOR);
+        return realpath($path);
     }
 }
