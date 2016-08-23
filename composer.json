@@ -1,0 +1,23 @@
+{
+    "name": "ellire/reprocess-templates",
+    "description": "Ellire simplifies deployment-specific configuration for your applications",
+    "version": "0.8.0",
+    "require": {
+        "php": "^5.3.3 || ^7.0",
+        "symfony/finder": "~2.7",
+        "symfony/config": "~2.7",
+        "twig/twig": "~1.0",
+        "symfony/console": "~2.7",
+        "psr/log": "^1.0"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "4.6.*"
+    },
+    "autoload": {
+        "psr-4": { "Ellire\\": "src/Ellire" }
+    },
+    "autoload-dev": {
+        "psr-4": { "": "tests/Ellire" }
+    },
+    "bin": ["bin/ellire"]
+}

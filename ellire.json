@@ -1,0 +1,11 @@
+{
+    "global": {
+        "profile": "dev",
+        "config_extension": "json",
+        "dist_file_extension": "template",
+        "generated_files_writable": "false",
+        "macro_opening_string": "@",
+        "macro_closing_string": "@",
+        "template_exclude_paths": "src/, tests/"
+    }
+}

@@ -1,0 +1,8 @@
+vendor/
+phpunit.xml
+.idea
+.DS_Store
+.settings
+.project
+.buildpath
+nbproject/
